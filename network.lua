@@ -4,29 +4,38 @@ local ann = require "ann"
 local labels = mnist.labels "data/train-labels.idx1-ubyte"
 local images = mnist.images "data/train-images.idx3-ubyte"
 
+local function connection(input, output)
+	local obj = {
+		w = ann.weight(input, output),
+		bias = ann.signal(output),
+		dw = ann.weight(input, output),
+		db = ann.signal(output),
+	}
+	return obj
+end
+
 local network = {}	; network.__index = network
 
 function network.new(args)
 	local n = {
-		layer_n = { args.input, args.hidden, args.output },
-		input_layer = ann.layer(args.input),
-		connection_ih = ann.connection(args.input, args.hidden),
-		hidden_layer = ann.layer(args.hidden),
-		connection_ho = ann.connection(args.hidden, args.output),
-		output_layer = ann.layer(args.output),
+		input = ann.signal(args.input),
+		hidden = ann.signal(args.hidden),
+		output = ann.signal(args.output),
+		weight_ih = ann.weight(args.input, args.hidden):randn(),
+		weight_ho = ann.weight(args.hidden, args.output):randn(),
+		bias_hidden = ann.signal(args.hidden):randn(),
+		bias_output = ann.signal(args.output):randn(),
 	}
-	n.connection_ih:randn()
-	n.connection_ho:randn()
 
 	return setmetatable(n, network)
 end
 
 function network:feedforward(image)
-	self.input_layer:init(image)
-	ann.feedforward(self.input_layer, self.hidden_layer, self.connection_ih)
-	ann.feedforward(self.hidden_layer, self.output_layer, self.connection_ho)
-
-	return self.output_layer
+	self.input:init(image)
+	ann.prop(self.input, self.hidden, self.weight_ih)
+	self.hidden:accumulate(self.bias_hidden):sigmoid()
+	ann.prop(self.hidden, self.output, self.weight_ho)
+	return self.output:accumulate(self.bias_output)
 end
 
 local function shffule_training_data(t)
@@ -40,49 +49,66 @@ end
 function network:train(training_data, batch_size, eta)
 	shffule_training_data(training_data)
 
-	local eta_ = eta / batch_size
-	local delta_ih = ann.connection(self.layer_n[1], self.layer_n[2])
-	local delta_ho = ann.connection(self.layer_n[2], self.layer_n[3])
+	local eta_ = - eta / batch_size
+	local dw_ih = ann.weight(self.weight_ih:size())
+	local dw_ih_s = ann.weight(self.weight_ih:size())
+	local dw_ho = ann.weight(self.weight_ho:size())
+	local dw_ho_s = ann.weight(self.weight_ho:size())
+	local db_output_s = ann.signal(self.output:size())
+	local db_hidden = ann.signal(self.hidden:size())
+	local db_hidden_s = ann.signal(self.hidden:size())
+	local output_error = ann.signal(self.output:size())
+
+	local db_output
 
 	local function backprop(expect)
-		ann.backprop_last(self.hidden_layer, self.output_layer, expect, delta_ho)
-		ann.backprop(self.input_layer, self.hidden_layer, delta_ih, delta_ho, self.connection_ho)
+		-- calc error
+		local output = self.output:sigmoid()
+		ann.signal_error(output, expect, output_error)
+		ann.sigmoid_prime(output, output_error, db_output)
+		-- backprop from output to hidden
+		ann.backprop_weight(self.hidden, db_output, dw_ho)
+		ann.backprop_bias(db_hidden, db_output, self.weight_ho)
+		ann.sigmoid_prime(self.hidden, db_hidden, db_hidden)
+		-- backprop from hidden to input
+		ann.backprop_weight(self.input, db_hidden, dw_ih)
 	end
 
-	local delta_ih_s = ann.connection(self.layer_n[1], self.layer_n[2])
-	local delta_ho_s = ann.connection(self.layer_n[2], self.layer_n[3])
-
 	for i = 1, #training_data, batch_size do
-		local r = self:feedforward(training_data[i].image)
-
+		self:feedforward(training_data[i].image)
+		db_output = db_output_s
 		backprop(training_data[i].expect)
-
-		delta_ih_s , delta_ih = delta_ih, delta_ih_s
-		delta_ho_s , delta_ho = delta_ho, delta_ho_s
+		db_output = self.output
+		db_hidden_s, db_hidden = db_hidden, db_hidden_s
+		dw_ih_s, dw_ih = dw_ih, dw_ih_s
+		dw_ho_s, dw_ho = dw_ho, dw_ho_s
 
 		for j = 1, batch_size-1 do
 			local image = training_data[i+j]
 			if image then
 				self:feedforward(image.image)
 				backprop(training_data[i+j].expect)
-				delta_ih_s:accumulate(delta_ih)
-				delta_ho_s:accumulate(delta_ho)
+				dw_ih_s:accumulate(dw_ih)
+				dw_ho_s:accumulate(dw_ho)
+				db_output_s:accumulate(db_output)
+				db_hidden_s:accumulate(db_hidden)
 			else
-				eta_ = eta / j
+				eta_ = - eta / j
 				break
 			end
 		end
 
-		self.connection_ih:update(delta_ih_s, eta_)
-		self.connection_ho:update(delta_ho_s, eta_)
+		self.weight_ih:accumulate(dw_ih_s, eta_)
+		self.weight_ho:accumulate(dw_ho_s, eta_)
+		self.bias_hidden:accumulate(db_hidden_s, eta_)
+		self.bias_output:accumulate(db_output_s, eta_)
 	end
 end
 
 local function gen_training_data()
 	local result = {}
 	for i = 0, 9 do
-		result[i] = ann.layer(10)
-		result[i]:init_n(i)
+		result[i] = ann.signal(10):init(i)
 	end
 	local training = {}
 	for i = 1, #images do
@@ -112,13 +138,11 @@ local function test()
 		local r, p = n:feedforward(images[idx]):max()
 		local label = labels[idx]
 		if r~=label then
---			print(label, r, p)
 			s = s + 1
 		end
 	end
-	return s, #labels
+	return (s / #labels * 100) .."%"
 end
-
 
 for i = 1, 30 do
 	n:train(data,10,3.0)
