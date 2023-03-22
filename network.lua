@@ -4,16 +4,6 @@ local ann = require "ann"
 local labels = mnist.labels "data/train-labels.idx1-ubyte"
 local images = mnist.images "data/train-images.idx3-ubyte"
 
-local function connection(input, output)
-	local obj = {
-		w = ann.weight(input, output),
-		bias = ann.signal(output),
-		dw = ann.weight(input, output),
-		db = ann.signal(output),
-	}
-	return obj
-end
-
 local network = {}	; network.__index = network
 
 function network.new(args)
@@ -57,19 +47,16 @@ function network:train(training_data, batch_size, eta)
 	local db_output_s = ann.signal(self.output:size())
 	local db_hidden = ann.signal(self.hidden:size())
 	local db_hidden_s = ann.signal(self.hidden:size())
-	local output_error = ann.signal(self.output:size())
 
 	local db_output
 
 	local function backprop(expect)
 		-- calc error
-		local output = self.output:sigmoid()
-		ann.signal_error(output, expect, output_error)
-		ann.sigmoid_prime(output, output_error, db_output)
+		ann.softmax_error(self.output, expect, db_output)
 		-- backprop from output to hidden
 		ann.backprop_weight(self.hidden, db_output, dw_ho)
 		ann.backprop_bias(db_hidden, db_output, self.weight_ho)
-		ann.sigmoid_prime(self.hidden, db_hidden, db_hidden)
+		ann.backprop_sigmoid(self.hidden, db_hidden)
 		-- backprop from hidden to input
 		ann.backprop_weight(self.input, db_hidden, dw_ih)
 	end
@@ -145,6 +132,6 @@ local function test()
 end
 
 for i = 1, 30 do
-	n:train(data,10,3.0)
+	n:train(data,20,3.0)
 	print("Epoch", i, test())
 end

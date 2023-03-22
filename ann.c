@@ -151,6 +151,18 @@ lsignal_sigmoid(lua_State *L) {
 	return 1;
 }
 
+static int
+lsignal_relu(lua_State *L) {
+	struct signal * s = check_signal(L, 1);
+	int i;
+	for (i=0;i<s->n;i++) {
+		if (s->data[i] < 0)
+			s->data[i] = 0;
+	}
+	lua_settop(L, 1);
+	return 1;
+}
+
 static inline float
 sigmoid_prime(float s) {
 	return s * (1-s);
@@ -247,6 +259,7 @@ lsignal(lua_State *L) {
 			{ "size", lsignal_size },
 			{ "accumulate", lsignal_accumulate },
 			{ "sigmoid", lsignal_sigmoid },
+			{ "relu", lsignal_relu },
 			{ "__tostring", lsignal_dump },
 			{ NULL, NULL },
 		};
@@ -460,29 +473,64 @@ lbackprop_bias(lua_State *L) {
 }
 
 static int
-lsigmoid_prime(lua_State *L) {
+lbackprop_sigmoid(lua_State *L) {
 	struct signal * s = check_signal(L, 1);
-	struct signal * mul = check_signal(L, 2);
-	struct signal * output = check_signal(L, 3);
-	if (s->n != mul->n || s->n != output->n)
+	struct signal * input = check_signal(L, 2);
+	if (s->n != input->n)
 		return luaL_error(L, "Invalid signal size");
 	int i;
 	for (i=0;i<s->n;i++) {
-		output->data[i] = sigmoid_prime(s->data[i]) * mul->data[i];
+		input->data[i] *= sigmoid_prime(s->data[i]);
 	}
 	return 0;
 }
 
 static int
-lsignal_error(lua_State *L) {
+lbackprop_relu(lua_State *L) {
+	struct signal * s = check_signal(L, 1);
+	struct signal * input = check_signal(L, 2);
+	if (s->n != input->n)
+		return luaL_error(L, "Invalid signal size");
+	int i;
+	for (i=0;i<s->n;i++) {
+		if (s->data[i] <= 0)
+			input->data[i] = 0;
+	}
+	return 0;
+}
+
+static void
+softmax(struct signal *a, struct signal *output) {
+	int i;
+	float m = a->data[0];
+	for (i=1;i<a->n;i++) {
+		if (a->data[i] > m)
+			m = a->data[i];
+	}
+	float sum = 0;
+	for (i=0;i<a->n;i++) {
+		float exp_a = expf(a->data[i] - m);
+		output->data[i] = exp_a;
+		sum += exp_a;
+	}
+	float inv_sum = 1.0f / sum;
+	for (i=0;i<a->n;i++) {
+		output->data[i] *= inv_sum;
+	}
+}
+
+
+static int
+lsignal_softmax(lua_State *L) {
 	struct signal * a = check_signal(L, 1);
 	struct signal * b = check_signal(L, 2);
 	struct signal * output = check_signal(L, 3);
 	if (a->n != b->n || a->n != output->n)
 		return luaL_error(L, "Invalid signal size");
+	softmax(a, output);
 	int i;
 	for (i=0;i<a->n;i++) {
-		output->data[i] = a->data[i] - b->data[i];
+		output->data[i] -= b->data[i];
 	}
 	return 0;
 }
@@ -496,8 +544,9 @@ luaopen_ann(lua_State *L) {
 		{ "prop", lprop },
 		{ "backprop_weight", lbackprop_weight },
 		{ "backprop_bias", lbackprop_bias },
-		{ "signal_error", lsignal_error },
-		{ "sigmoid_prime", lsigmoid_prime },
+		{ "softmax_error", lsignal_softmax },
+		{ "backprop_sigmoid", lbackprop_sigmoid },
+		{ "backprop_relu", lbackprop_relu },
 		{ NULL, NULL },
 	};
 	luaL_newlib(L, l);
